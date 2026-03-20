@@ -11,6 +11,7 @@ export interface Env {
 const KV_AVAILABILITY = 'state:availability';
 const KV_KNOWN_HANDLES = 'state:known_handles';
 const KV_FEED_ALL = 'feed:all';
+const KV_FEED_IN_STOCK = 'feed:in-stock'; // 在庫ありイベントのみ
 // feed:vendor:{encodedVendor} で各アーティストのフィードを保存
 
 const MAX_RSS_ITEMS = 50;
@@ -24,6 +25,11 @@ export default {
       // GET / → 全体フィード
       if (path === '/' || path === '/feed.xml') {
         return serveFeed(env, KV_FEED_ALL, env.FEED_SELF_URL, 'FIND ME STORE 全商品通知');
+      }
+
+      // GET /in-stock → 在庫ありフィード
+      if (path === '/in-stock') {
+        return serveFeed(env, KV_FEED_IN_STOCK, `${env.FEED_SELF_URL}in-stock`, 'FIND ME STORE 在庫あり通知');
       }
 
       // GET /vendors → アーティスト一覧
@@ -101,7 +107,8 @@ async function serveVendorList(env: Env): Promise<Response> {
 <body>
 <h1>FIND ME STORE RSS フィード</h1>
 <ul>
-  <li><a href="${baseUrl}/">全商品フィード</a></li>
+  <li><a href="${baseUrl}/">全商品フィード（新商品・在庫復活）</a></li>
+  <li><a href="${baseUrl}/in-stock">在庫ありフィード（購入可能な通知のみ）</a></li>
 </ul>
 <h2>アーティスト別フィード</h2>
 <ul>${items.join('\n')}</ul>
@@ -169,6 +176,7 @@ async function runCheck(env: Env): Promise<CheckResult> {
 
   const newAvailability: Record<string, boolean> = { ...prevAvailability };
   const allNewEvents: RssItem[] = [];
+  const inStockEvents: RssItem[] = []; // 在庫ありイベントのみ
   const vendorEvents: Record<string, RssItem[]> = {};
   const vendorSet = new Set<string>(await loadVendors(env));
 
@@ -185,9 +193,11 @@ async function runCheck(env: Env): Promise<CheckResult> {
     let event: RssItem | null = null;
 
     if (!knownHandles.has(product.handle)) {
+      // 新商品：在庫状態をタイトルに明記
+      const label = available ? '【新商品・在庫あり】' : '【新商品・在庫なし】';
       event = {
         guid: `new-${product.handle}`,
-        title: `【新商品】${product.title}`,
+        title: `${label}${product.title}`,
         link: productUrl,
         description: buildDescription(product, price, available, '新商品が追加されました'),
         pubDate,
@@ -210,6 +220,7 @@ async function runCheck(env: Env): Promise<CheckResult> {
 
     if (event) {
       allNewEvents.push(event);
+      if (available) inStockEvents.push(event);
       if (!vendorEvents[product.vendor]) vendorEvents[product.vendor] = [];
       vendorEvents[product.vendor].push(event);
     }
@@ -231,6 +242,13 @@ async function runCheck(env: Env): Promise<CheckResult> {
     const existing = await loadItems(env, KV_FEED_ALL);
     const merged = [...allNewEvents, ...existing].slice(0, MAX_RSS_ITEMS);
     writes.push(env.KV.put(KV_FEED_ALL, JSON.stringify(merged)));
+
+    // 在庫ありフィード更新
+    if (inStockEvents.length > 0) {
+      const existingInStock = await loadItems(env, KV_FEED_IN_STOCK);
+      const mergedInStock = [...inStockEvents, ...existingInStock].slice(0, MAX_RSS_ITEMS);
+      writes.push(env.KV.put(KV_FEED_IN_STOCK, JSON.stringify(mergedInStock)));
+    }
 
     // アーティスト別フィード更新
     for (const [vendor, events] of Object.entries(vendorEvents)) {
