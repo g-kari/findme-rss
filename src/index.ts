@@ -1,9 +1,8 @@
-import { fetchCollectionProducts, isAvailable, formatPrice, ShopifyProduct } from './shopify';
+import { fetchAllProducts, isAvailable, formatPrice, ShopifyProduct } from './shopify';
 import { buildRssFeed, RssItem } from './rss';
 
 export interface Env {
   KV: KVNamespace;
-  COLLECTION_HANDLES: string;
   SHOP_BASE_URL: string;
   FEED_SELF_URL: string;
 }
@@ -142,80 +141,77 @@ interface CheckResult {
 
 async function runCheck(env: Env): Promise<CheckResult> {
   const result: CheckResult = { newProducts: 0, restocks: 0, totalKnown: 0, errors: [] };
-  const collectionHandles = env.COLLECTION_HANDLES.split(',').map((s) => s.trim());
 
-  console.log(`Starting check for collections: ${collectionHandles.join(', ')}`);
+  console.log('Starting check for all products');
 
   // 現在の状態をロード
-  const [prevAvailability, knownHandles] = await Promise.all([
+  const [prevAvailability, knownHandlesArr] = await Promise.all([
     loadAvailability(env),
     loadKnownHandles(env),
   ]);
 
-  console.log(`Loaded state: ${knownHandles.length} known handles, ${Object.keys(prevAvailability).length} availability records`);
+  // Set で高速ルックアップ（3000件超でも O(1)）
+  const knownHandles = new Set(knownHandlesArr);
+
+  console.log(`Loaded state: ${knownHandles.size} known handles`);
+
+  // ストア全商品を取得
+  let products: ShopifyProduct[];
+  try {
+    products = await fetchAllProducts(env.SHOP_BASE_URL);
+  } catch (e) {
+    const msg = `Failed to fetch products: ${e}`;
+    console.error(msg);
+    result.errors.push(msg);
+    return result;
+  }
+  console.log(`Fetched ${products.length} products`);
 
   const newAvailability: Record<string, boolean> = { ...prevAvailability };
   const allNewEvents: RssItem[] = [];
-  // vendor → [events]
   const vendorEvents: Record<string, RssItem[]> = {};
   const vendorSet = new Set<string>(await loadVendors(env));
 
-  for (const collection of collectionHandles) {
-    console.log(`Fetching collection: ${collection}`);
-    let products: ShopifyProduct[];
-    try {
-      products = await fetchCollectionProducts(env.SHOP_BASE_URL, collection);
-    } catch (e) {
-      const msg = `Failed to fetch collection ${collection}: ${e}`;
-      console.error(msg);
-      result.errors.push(msg);
-      continue;
+  for (const product of products) {
+    const available = isAvailable(product);
+    newAvailability[product.handle] = available;
+    vendorSet.add(product.vendor);
+
+    const productUrl = `${env.SHOP_BASE_URL}/products/${product.handle}`;
+    const imageUrl = normalizeImageUrl(product.images[0]?.src, env.SHOP_BASE_URL);
+    const price = formatPrice(product);
+    const pubDate = new Date().toUTCString();
+
+    let event: RssItem | null = null;
+
+    if (!knownHandles.has(product.handle)) {
+      event = {
+        guid: `new-${product.handle}`,
+        title: `【新商品】${product.title}`,
+        link: productUrl,
+        description: buildDescription(product, price, available, '新商品が追加されました'),
+        pubDate,
+        imageUrl,
+        vendor: product.vendor,
+      };
+      result.newProducts++;
+    } else if (product.handle in prevAvailability && !prevAvailability[product.handle] && available) {
+      event = {
+        guid: `restock-${product.handle}-${Date.now()}`,
+        title: `【在庫復活】${product.title}`,
+        link: productUrl,
+        description: buildDescription(product, price, available, '在庫が復活しました'),
+        pubDate,
+        imageUrl,
+        vendor: product.vendor,
+      };
+      result.restocks++;
     }
-    console.log(`Fetched ${products.length} products from ${collection}`);
 
-    for (const product of products) {
-      const available = isAvailable(product);
-      newAvailability[product.handle] = available;
-      vendorSet.add(product.vendor);
-
-      const productUrl = `${env.SHOP_BASE_URL}/products/${product.handle}`;
-      const imageUrl = normalizeImageUrl(product.images[0]?.src, env.SHOP_BASE_URL);
-      const price = formatPrice(product);
-      const pubDate = new Date().toUTCString();
-
-      let event: RssItem | null = null;
-
-      if (!knownHandles.includes(product.handle)) {
-        console.log(`New product: ${product.handle}`);
-        event = {
-          guid: `new-${product.handle}`,
-          title: `【新商品】${product.title}`,
-          link: productUrl,
-          description: buildDescription(product, price, available, '新商品が追加されました'),
-          pubDate,
-          imageUrl,
-          vendor: product.vendor,
-        };
-        result.newProducts++;
-      } else if (product.handle in prevAvailability && !prevAvailability[product.handle] && available) {
-        console.log(`Restocked: ${product.handle}`);
-        event = {
-          guid: `restock-${product.handle}-${Date.now()}`,
-          title: `【在庫復活】${product.title}`,
-          link: productUrl,
-          description: buildDescription(product, price, available, '在庫が復活しました'),
-          pubDate,
-          imageUrl,
-          vendor: product.vendor,
-        };
-        result.restocks++;
-      }
-
-      if (event) {
-        allNewEvents.push(event);
-        if (!vendorEvents[product.vendor]) vendorEvents[product.vendor] = [];
-        vendorEvents[product.vendor].push(event);
-      }
+    if (event) {
+      allNewEvents.push(event);
+      if (!vendorEvents[product.vendor]) vendorEvents[product.vendor] = [];
+      vendorEvents[product.vendor].push(event);
     }
   }
 

@@ -1,0 +1,45 @@
+# findme-rss
+
+findmestore.thinkr.jp（Shopifyストア）の在庫復活・新商品追加をRSSフィードで通知する Cloudflare Worker。
+
+## 構成
+
+- **Runtime**: Cloudflare Workers (TypeScript)
+- **State**: Cloudflare KV Namespace
+- **Polling**: Cloudflare Cron Triggers（5分ごと）
+- **Source**: https://github.com/g-kari/findme-rss
+- **Live**: https://findme-rss.0g0.xyz/
+
+## ファイル
+
+- `src/index.ts` — Worker エントリーポイント。HTTPルーティングとCronロジック
+- `src/shopify.ts` — Shopify `/products.json` APIクライアント（全3270件対応、ページ間1秒ウェイト）
+- `src/rss.ts` — RSS 2.0 XML ビルダー
+- `wrangler.toml` — Cloudflare Workers 設定
+
+## KV スキーマ
+
+```
+state:availability   = Record<handle, boolean>   # 全商品の在庫状態
+state:known_handles  = string[]                  # 既知ハンドル一覧
+state:vendors        = string[]                  # アーティスト名一覧
+feed:all             = RssItem[]                 # 全商品フィード（最大50件）
+feed:vendor:{enc}    = RssItem[]                 # アーティスト別フィード
+```
+
+## エンドポイント
+
+```
+GET  /                → 全商品 RSS フィード (application/rss+xml)
+GET  /vendors         → アーティスト一覧 HTML
+GET  /vendors/:name   → アーティスト別 RSS フィード
+POST /refresh         → 手動更新（JSON レスポンス）
+GET  /debug           → KV 状態確認（JSON）
+```
+
+## 検知ロジック
+
+1. `/products.json?limit=250&page=N` を全ページ取得（1秒ウェイト付き）
+2. `state:known_handles` に未登録 → **新商品**イベント生成
+3. `state:availability` で `false → true` の変化 → **在庫復活**イベント生成
+4. イベントを `feed:all` と `feed:vendor:{vendor}` に追記
