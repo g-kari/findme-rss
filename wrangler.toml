@@ -1,0 +1,26 @@
+name = "findme-rss"
+main = "src/index.ts"
+compatibility_date = "2024-01-17"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "KV"
+id = "e47caba121744e739e53bc666084ea8b"
+preview_id = "4bb359e16cb04a8f8d63533407d6ff6e"
+
+[triggers]
+# 5分ごとにポーリング
+crons = ["*/5 * * * *"]
+
+[[routes]]
+pattern = "findme-rss.0g0.xyz"
+custom_domain = true
+
+[vars]
+# 監視対象のコレクション（カンマ区切り）
+COLLECTION_HANDLES = "digital-contents"
+# サイトのベースURL
+SHOP_BASE_URL = "https://findmestore.thinkr.jp"
+# RSSフィードのURL
+FEED_SELF_URL = "https://findme-rss.0g0.xyz/"

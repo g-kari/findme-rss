@@ -1,0 +1,15 @@
+{
+  "name": "findme-rss",
+  "version": "1.0.0",
+  "description": "findmestore.thinkr.jp の在庫変更・新商品をRSSで通知するCloudflare Worker",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^4.76.0"
+  }
+}
